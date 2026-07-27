@@ -31,6 +31,27 @@ NSInteger const AIR_CALLOUT_OPEN_ZINDEX_BASELINE = 999;
 static NSCache<NSString *, UIImage *>                                          *AIRImageCache;
 static NSMutableDictionary<NSString *, NSMutableArray<void (^)(UIImage *)> *>  *AIRPendingHandlers;
 
+// React Native's asset resolver bakes the chosen density into the filename
+// (e.g. "pin@2x.png"), omitting the suffix for 1x. That resolved density is
+// what the pixel data actually is, so it — not the screen's scale — is what
+// UIImage must be decoded with.
+static CGFloat AIRScaleFromAssetURL(NSString *urlString) {
+    CGFloat scale = 1;
+    NSString *filename = [NSURL URLWithString:urlString].path.lastPathComponent;
+    NSRange at = [filename rangeOfString:@"@" options:NSBackwardsSearch];
+    if (at.location != NSNotFound) {
+        NSString *suffix = [filename substringFromIndex:at.location + 1];
+        NSRange x = [suffix rangeOfString:@"x"];
+        if (x.location != NSNotFound) {
+            CGFloat parsed = [[suffix substringToIndex:x.location] doubleValue];
+            if (parsed > 0) {
+                scale = parsed;
+            }
+        }
+    }
+    return scale;
+}
+
 // Requests the image at urlString, returning a cancel block.
 // "Cancel" means this caller no longer wants the result — it does NOT abort
 // the network request, which other waiting callers still need.
@@ -426,7 +447,7 @@ static dispatch_block_t AIRLoadImage(NSString *urlString, CGFloat scale, void (^
     if (!imageSrc) return;
 
     __weak __typeof(self) weakSelf = self;
-    _imageLoadCancel = AIRLoadImage(imageSrc, RCTScreenScale(), ^(UIImage *image) {
+    _imageLoadCancel = AIRLoadImage(imageSrc, AIRScaleFromAssetURL(imageSrc), ^(UIImage *image) {
         weakSelf.image = image;
     });
 }
