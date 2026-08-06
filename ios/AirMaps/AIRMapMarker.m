@@ -31,13 +31,34 @@ NSInteger const AIR_CALLOUT_OPEN_ZINDEX_BASELINE = 999;
 static NSCache<NSString *, UIImage *>                                          *AIRImageCache;
 static NSMutableDictionary<NSString *, NSMutableArray<void (^)(UIImage *)> *>  *AIRPendingHandlers;
 
+// True for URIs that came out of RN's asset pipeline rather than an arbitrary
+// remote URL: an on-device bundled asset (file:// under the app's bundle,
+// library, or home directory — what RCTIsLocalAssetURL already recognizes
+// for RN's own image loaders) or the Metro dev-server form produced by
+// AssetSourceResolver's assetServerURL(), e.g. ".../assets/Foo/icon@2x.png
+// ?platform=ios&hash=...".
+static BOOL AIRIsPackagerAssetURL(NSURL *url) {
+    if (RCTIsLocalAssetURL(url)) {
+        return YES;
+    }
+    NSString *query = url.query;
+    return url.path != nil && [url.path containsString:@"/assets/"]
+        && query != nil && [query containsString:@"hash="];
+}
+
 // React Native's asset resolver bakes the chosen density into the filename
 // (e.g. "pin@2x.png"), omitting the suffix for 1x. That resolved density is
-// what the pixel data actually is, so it — not the screen's scale — is what
-// UIImage must be decoded with.
+// what the pixel data actually is, so for RN assets it — not the screen's
+// scale — is what UIImage must be decoded with. Arbitrary remote URLs carry
+// no such baked-in density, so they keep using the screen's scale as before.
 static CGFloat AIRScaleFromAssetURL(NSString *urlString) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!AIRIsPackagerAssetURL(url)) {
+        return RCTScreenScale();
+    }
+
     CGFloat scale = 1;
-    NSString *filename = [NSURL URLWithString:urlString].path.lastPathComponent;
+    NSString *filename = url.path.lastPathComponent;
     NSRange at = [filename rangeOfString:@"@" options:NSBackwardsSearch];
     if (at.location != NSNotFound) {
         NSString *suffix = [filename substringFromIndex:at.location + 1];
@@ -445,6 +466,15 @@ static dispatch_block_t AIRLoadImage(NSString *urlString, CGFloat scale, void (^
         _imageLoadCancel = nil;
     }
     if (!imageSrc) return;
+
+    // A bare name with no URL scheme (e.g. image={{uri: 'custom_pin'}}) refers
+    // to an Xcode asset-catalog image, not something NSURLSession can fetch.
+    // Load it synchronously via the catalog instead, as RCTLocalAssetImageLoader
+    // did before this component moved off RCTImageLoader.
+    if ([NSURL URLWithString:imageSrc].scheme == nil) {
+        self.image = [UIImage imageNamed:imageSrc];
+        return;
+    }
 
     __weak __typeof(self) weakSelf = self;
     _imageLoadCancel = AIRLoadImage(imageSrc, AIRScaleFromAssetURL(imageSrc), ^(UIImage *image) {
